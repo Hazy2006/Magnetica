@@ -1,14 +1,36 @@
-"""
-Magnetic field computation.
+# field.py
+import numpy as np
 
-Day 1 lives here: define magnet sources, compute the field vector B
-at any point in space. Everything downstream (rendering, particle
-motion) reads from this.
+class Magnet:
+    def __init__(self, position, moment):
+        self.position = np.array(position, dtype=float)
+        self.moment = np.array(moment, dtype=float)
 
-TODO (Day 1):
-  - Represent a magnet source (position, strength).
-  - Compute the field contribution of one source at a point.
-  - Sum contributions from all sources at a grid of points.
-"""
+def compute_dipole_field(magnet, x, y):
+    rx = x - magnet.position[0]
+    ry = y - magnet.position[1]
+    
+    r_sq = rx**2 + ry**2
+    # Prevent division by zero at the exact location of the magnet
+    r_sq[r_sq == 0] = 1e-9 
+    r_mag = np.sqrt(r_sq)
 
-# TODO Day 1: implement field computation
+    # Dot product (m dot r)
+    dot_product = magnet.moment[0] * rx + magnet.moment[1] * ry
+
+    # B field components based on the dipole equation
+    bx = (3 * rx * dot_product / r_mag**5) - (magnet.moment[0] / r_mag**3)
+    by = (3 * ry * dot_product / r_mag**5) - (magnet.moment[1] / r_mag**3)
+
+    return bx, by
+
+def compute_total_field(magnets, x, y):
+    bx_total = np.zeros_like(x)
+    by_total = np.zeros_like(y)
+
+    for magnet in magnets:
+        bx, by = compute_dipole_field(magnet, x, y)
+        bx_total += bx
+        by_total += by
+
+    return bx_total, by_total
