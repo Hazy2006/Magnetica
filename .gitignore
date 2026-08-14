@@ -33,3 +33,6 @@ output/
 
 # Env files
 .env
+
+# Subagent-driven-development scratch workspace
+.superpowers/
