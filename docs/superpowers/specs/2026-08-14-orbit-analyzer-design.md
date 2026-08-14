@@ -138,10 +138,15 @@ every time a new crossing is detected.
   tolerance). `None` (`—`) until one full lap's worth of points
   exists.
 - *Crossings*: count of self-intersections within that same lap's
-  polyline via pairwise segment-intersection tests. The lap is capped
-  to one revolution's worth of points (typically tens to a couple
-  hundred), so this stays cheap — it is **not** run over the entire
-  session's trajectory.
+  polyline via pairwise segment-intersection tests — **not** run over
+  the entire session's trajectory. Correction from an earlier revision
+  of this spec: a real orbit with `PARTICLE_DT = 0.01` and a period of
+  several seconds produces 500-1500+ raw substep points per lap, not
+  "tens to a couple hundred" — the O(n²) segment-intersection test on
+  that many raw points is expensive enough to stall the live UI for
+  seconds per lap. `_lap_points` must be explicitly capped (e.g. a
+  fixed-size ring buffer, `LAP_POINT_CAP`) independent of how many
+  substeps actually occur between crossings.
 
 Both values update once per completed lap, not every tick — they show
 the shape of the *last finished lap* until the next one completes.
@@ -170,9 +175,13 @@ this kind of section, useful even without formal guarantees.
 ## Energy monitor plot
 
 Small axes in the bottom-left grid cell. Rolling window of the last
-~30 seconds of simulation time (buffer sized from
-`PARTICLE_DT * PARTICLE_STEPS_PER_FRAME`, so it's a fixed number of
-samples regardless of frame rate). Three lines — KE, PE, Total E — on
+~30 seconds of simulation time (buffer sized from `dt_per_sample`,
+the interval between individual `OrbitAnalyzer.update()` calls —
+which is `PARTICLE_DT` alone, since the analyzer is fed once per
+physics substep, not once per animation frame. An earlier revision of
+this spec said `PARTICLE_DT * PARTICLE_STEPS_PER_FRAME`, which would
+undersize the window by `PARTICLE_STEPS_PER_FRAME`x; the implementation
+correctly uses `dt_per_sample=PARTICLE_DT`). Three lines — KE, PE, Total E — on
 the primary y-axis; a fourth line — relative energy error
 `|E(t) - E_0| / |E_0|` (`E_0` = energy at analyzer construction) — on
 a **secondary (twin) y-axis in %**, since it lives on a much smaller
