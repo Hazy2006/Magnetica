@@ -1,11 +1,26 @@
 import numpy as np
 
 
+class OverlappingMagnetsError(ValueError):
+    """Raised when two magnets' physical extents (position + radius) overlap."""
+
+
+def check_no_overlap(magnets):
+    for i in range(len(magnets)):
+        for j in range(i + 1, len(magnets)):
+            dist = np.linalg.norm(magnets[i].position - magnets[j].position)
+            min_dist = magnets[i].radius + magnets[j].radius
+            if dist < min_dist:
+                raise OverlappingMagnetsError(
+                    "magnets overlap, please change coordinates in the code"
+                )
+
+
 class Magnet:
-    def __init__(self, position, moment):
+    def __init__(self, position, moment, radius=0.1):
         self.position = np.array(position, dtype=float)
         self.moment = np.array(moment, dtype=float)
-
+        self.radius = radius        # physical size — no longer a point source
 
 def compute_dipole_field(magnet, x, y):
     rx = x - magnet.position[0]
@@ -25,7 +40,6 @@ def compute_dipole_field(magnet, x, y):
 
     return bx, by
 
-
 def compute_total_field(magnets, x, y):
     bx_total = np.zeros_like(x)
     by_total = np.zeros_like(y)
@@ -36,3 +50,18 @@ def compute_total_field(magnets, x, y):
         by_total += by
 
     return bx_total, by_total
+
+def compute_bz(magnets, x, y):
+    """
+    Out-of-plane field strength (z-component) at each point.
+    Each magnet contributes strength / (r^2 + radius^2), falling off
+    with distance while accounting for the physical size of the magnet.
+    """
+    bz_total = np.zeros_like(x, dtype=float)
+    for magnet in magnets:
+        rx = x - magnet.position[0]
+        ry = y - magnet.position[1]
+        r_sq = rx**2 + ry**2
+        strength = np.sqrt(magnet.moment[0]**2 + magnet.moment[1]**2)
+        bz_total += strength / (r_sq + magnet.radius**2)
+    return bz_total
