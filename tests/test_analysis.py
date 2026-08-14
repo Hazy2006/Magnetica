@@ -112,3 +112,30 @@ def test_analyze_lap_returns_none_for_too_few_points():
     is_convex, crossings = analyze_lap([(0, 0), (1, 1)])
     assert is_convex is None
     assert crossings == 0
+
+
+def test_energy_history_rolls_off_old_samples_outside_window():
+    dt = 0.1
+    window = 1.0
+    analyzer = OrbitAnalyzer(g=1.0, dt_per_sample=dt, energy_window_seconds=window)
+    for i in range(30):
+        t = i * dt
+        analyzer.update(t, position=(1.0, 0.0), velocity=(0.0, 0.0), magnets=[])
+    hist = analyzer.energy_history
+    assert len(hist["t"]) == 10
+    assert hist["t"][0] == pytest.approx(2.0)
+    assert hist["t"][-1] == pytest.approx(2.9)
+
+
+def test_relative_energy_error_matches_formula():
+    magnets = [Magnet(position=(0, 0), moment=(0, 1), radius=0.1)]
+    analyzer = OrbitAnalyzer(g=1.0, dt_per_sample=0.1)
+
+    analyzer.update(0.0, position=(2.0, 0.0), velocity=(0.0, 1.0), magnets=magnets)
+    e0 = analyzer.energy_history["e"][-1]
+
+    analyzer.update(0.1, position=(2.0, 0.0), velocity=(0.0, 2.0), magnets=magnets)
+    e1 = analyzer.energy_history["e"][-1]
+    expected_rel_err = abs(e1 - e0) / abs(e0)
+
+    assert analyzer.energy_history["rel_err"][-1] == pytest.approx(expected_rel_err)
