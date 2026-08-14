@@ -27,6 +27,49 @@ def _magnets_centroid(magnets):
     return np.mean([m.position for m in magnets], axis=0)
 
 
+def _cross(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def segments_intersect(p1, p2, p3, p4):
+    """True if segment p1-p2 properly crosses segment p3-p4."""
+    d1 = _cross(p3, p4, p1)
+    d2 = _cross(p3, p4, p2)
+    d3 = _cross(p1, p2, p3)
+    d4 = _cross(p1, p2, p4)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def analyze_lap(points, convex_tolerance=1e-9):
+    """Analyze one completed orbit lap's worth of points: whether the
+    polyline is convex and how many times it crosses itself. Returns
+    (None, 0) if there are too few points to judge (fewer than 3).
+
+    A star/rosette shape can turn the same rotational direction at every
+    vertex (just a wider angle than a simple convex shape), so "all turns
+    the same sign" alone is not sufficient to call something convex --
+    it must also not cross itself."""
+    if len(points) < 3:
+        return None, 0
+
+    signs = set()
+    for i in range(len(points) - 2):
+        c = _cross(points[i], points[i + 1], points[i + 2])
+        if abs(c) > convex_tolerance:
+            signs.add(c > 0)
+    consistent_turning = len(signs) <= 1
+
+    crossings = 0
+    segment_count = len(points) - 1
+    for i in range(segment_count):
+        for j in range(i + 2, segment_count):
+            if segments_intersect(points[i], points[i + 1], points[j], points[j + 1]):
+                crossings += 1
+
+    is_convex = consistent_turning and crossings == 0
+    return is_convex, crossings
+
+
 class OrbitAnalyzer:
     """Tracks live orbit-shape and energy metrics from a stream of
     (t, position, velocity, magnets) physics substeps. Has no matplotlib
@@ -112,6 +155,7 @@ class OrbitAnalyzer:
             denom = max(r_prev, r_curr, 1e-9)
             self._closure_pct = 100.0 * (1.0 - abs(r_curr - r_prev) / denom)
 
+        self._is_convex, self._crossing_count = analyze_lap(self._lap_points)
         self._lap_points = [self._lap_points[-1]] if self._lap_points else []
 
     @property

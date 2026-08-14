@@ -69,3 +69,46 @@ def test_no_crossing_within_debounce_interval():
     analyzer.update(0.05, position=(1.0, 0.01), velocity=(0.0, 0.0), magnets=[])
     analyzer.update(0.1, position=(1.0, -0.01), velocity=(0.0, 0.0), magnets=[])
     assert len(analyzer.poincare_points) == 1
+
+
+from magnetica.analysis import segments_intersect, analyze_lap
+
+
+def test_segments_intersect_detects_crossing_x():
+    assert segments_intersect((0, 0), (1, 1), (0, 1), (1, 0)) is True
+
+
+def test_segments_intersect_ignores_parallel_segments():
+    assert segments_intersect((0, 0), (1, 0), (0, 1), (1, 1)) is False
+
+
+def test_analyze_lap_convex_circle_has_no_self_intersections():
+    n = 40
+    points = [(np.cos(2 * np.pi * i / n), np.sin(2 * np.pi * i / n)) for i in range(n)]
+    is_convex, crossings = analyze_lap(points)
+    assert is_convex is True
+    assert crossings == 0
+
+
+def test_analyze_lap_star_is_not_convex_and_self_intersects():
+    # A pentagram traced through every second vertex of a regular pentagon.
+    # Note: this turns the same rotational direction at every vertex (just
+    # a wider angle than a simple pentagon), so a naive "same-sign turns"
+    # check alone would wrongly call it convex -- it must also fail because
+    # it self-intersects. That's exactly what this test guards.
+    n = 5
+    outer = [
+        (np.cos(2 * np.pi * i / n - np.pi / 2), np.sin(2 * np.pi * i / n - np.pi / 2))
+        for i in range(n)
+    ]
+    star_order = [0, 2, 4, 1, 3]
+    points = [outer[i] for i in star_order]
+    is_convex, crossings = analyze_lap(points)
+    assert crossings > 0
+    assert is_convex is False
+
+
+def test_analyze_lap_returns_none_for_too_few_points():
+    is_convex, crossings = analyze_lap([(0, 0), (1, 1)])
+    assert is_convex is None
+    assert crossings == 0
