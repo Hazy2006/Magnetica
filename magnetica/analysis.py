@@ -4,6 +4,9 @@ from collections import deque
 MIN_CROSSING_INTERVAL = 0.5   # seconds of simulation time
 POINCARE_CAP = 500
 ENERGY_WINDOW_SECONDS = 30.0
+LAP_POINT_CAP = 400   # enough points to judge convexity/self-intersection
+                       # shape without letting analyze_lap's O(n^2) loop
+                       # blow up on long-period orbits
 
 
 def _kinetic_energy(velocity, mass=1.0):
@@ -89,7 +92,7 @@ class OrbitAnalyzer:
 
         self._poincare_points = deque(maxlen=POINCARE_CAP)
 
-        self._lap_points = []
+        self._lap_points = deque(maxlen=LAP_POINT_CAP)
         self._is_convex = None
         self._crossing_count = 0
 
@@ -138,7 +141,7 @@ class OrbitAnalyzer:
                 if not debounced:
                     self._on_crossing(t, r, rel, velocity)
         self._prev_rel = rel
-        self._lap_points.append(position.copy())
+        self._lap_points.append((float(position[0]), float(position[1])))
 
     def _on_crossing(self, t, r, rel, velocity):
         self._last_crossing_t = t
@@ -155,8 +158,12 @@ class OrbitAnalyzer:
             denom = max(r_prev, r_curr, 1e-9)
             self._closure_pct = 100.0 * (1.0 - abs(r_curr - r_prev) / denom)
 
-        self._is_convex, self._crossing_count = analyze_lap(self._lap_points)
-        self._lap_points = [self._lap_points[-1]] if self._lap_points else []
+            self._is_convex, self._crossing_count = analyze_lap(list(self._lap_points))
+
+        seed = self._lap_points[-1] if self._lap_points else None
+        self._lap_points = deque(maxlen=LAP_POINT_CAP)
+        if seed is not None:
+            self._lap_points.append(seed)
 
     @property
     def status(self):

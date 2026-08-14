@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 
-from magnetica.analysis import OrbitAnalyzer
+from magnetica.analysis import OrbitAnalyzer, LAP_POINT_CAP
 from magnetica.field import Magnet
 
 
@@ -125,6 +125,50 @@ def test_energy_history_rolls_off_old_samples_outside_window():
     assert len(hist["t"]) == 10
     assert hist["t"][0] == pytest.approx(2.0)
     assert hist["t"][-1] == pytest.approx(2.9)
+
+
+def test_is_convex_and_crossing_count_stay_default_after_one_crossing():
+    # Same exact-circular-motion setup as
+    # test_period_and_closure_for_exact_circular_motion, but stopped after
+    # only ~1.2 periods -- long enough for exactly one ray crossing (which
+    # happens once per revolution, at t = T/2) but short enough to miss the
+    # second one (at t = 3T/2). is_convex/crossing_count require a full
+    # completed lap (2 crossings), so they must still read their Task-1
+    # defaults here even though _lap_points has accumulated plenty of data.
+    R = 2.0
+    T = 4.0
+    w = 2 * np.pi / T
+    dt = 0.01
+    analyzer = OrbitAnalyzer(g=1.0, dt_per_sample=dt)
+
+    steps = int(1.2 * T / dt)
+    for i in range(steps):
+        t = i * dt
+        theta = np.pi + w * t
+        position = (R * np.cos(theta), R * np.sin(theta))
+        velocity = (-R * w * np.sin(theta), R * w * np.cos(theta))
+        analyzer.update(t, position, velocity, magnets=[])
+
+    # Sanity check: the test actually exercised exactly one crossing, not
+    # zero (which would make the assertions below trivially true).
+    assert len(analyzer.poincare_points) == 1
+
+    assert analyzer.is_convex is None
+    assert analyzer.crossing_count == 0
+
+
+def test_lap_points_never_exceed_cap_with_no_crossings():
+    # A position with rel[0] < 0 relative to the (empty-magnets) centroid
+    # can never satisfy the crossing condition (sign_changed and
+    # rel[0] > 0), so no crossing ever fires and _lap_points would grow
+    # without bound if it weren't capped.
+    analyzer = OrbitAnalyzer(g=1.0)
+    for i in range(5000):
+        t = i * 0.01
+        analyzer.update(t, position=(-5.0, 0.0), velocity=(0.0, 0.0), magnets=[])
+
+    assert len(analyzer._lap_points) <= LAP_POINT_CAP
+    assert analyzer.crossing_count == 0
 
 
 def test_relative_energy_error_matches_formula():
