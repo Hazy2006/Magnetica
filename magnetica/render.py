@@ -159,6 +159,35 @@ class InteractiveScene:
 
         self.fig.text(0.5, 0.02, INSTRUCTIONS, ha='center', va='bottom', fontsize=9)
 
+        self.analyzer_text = self.ax_main.text(
+            0.02, 0.02, '', transform=self.ax_main.transAxes, va='bottom', ha='left',
+            fontsize=8, family='monospace', color='white',
+            bbox=dict(facecolor='black', alpha=0.6, pad=4))
+
+        self.poincare_scatter = self.ax_poincare.scatter([], [], s=8, c='deepskyblue')
+        self.ax_poincare.set_title('Poincaré section', fontsize=9)
+        self.ax_poincare.set_xlabel('r', fontsize=8)
+        self.ax_poincare.set_ylabel('radial velocity', fontsize=8)
+        self.ax_poincare.tick_params(labelsize=7)
+
+        self.ke_line, = self.ax_energy.plot([], [], color='orange', label='KE')
+        self.pe_line, = self.ax_energy.plot([], [], color='deepskyblue', label='PE')
+        self.e_line, = self.ax_energy.plot([], [], color='white', label='Total E')
+        self.ax_energy.set_title('Energy monitor', fontsize=9)
+        self.ax_energy.set_xlabel('time (s)', fontsize=8)
+        self.ax_energy.set_ylabel('energy', fontsize=8)
+        self.ax_energy.tick_params(labelsize=7)
+
+        self.ax_energy_twin = self.ax_energy.twinx()
+        self.rel_err_line, = self.ax_energy_twin.plot(
+            [], [], color='red', linestyle='--', label='Rel. error (%)')
+        self.ax_energy_twin.set_ylabel('relative error (%)', fontsize=8)
+        self.ax_energy_twin.tick_params(labelsize=7)
+
+        energy_lines = [self.ke_line, self.pe_line, self.e_line, self.rel_err_line]
+        self.ax_energy.legend(energy_lines, [l.get_label() for l in energy_lines],
+                               fontsize=6, loc='upper left')
+
     def _connect_events(self):
         self.fig.canvas.mpl_connect('button_press_event', self.on_press)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
@@ -262,6 +291,21 @@ class InteractiveScene:
             return "Add mode armed — click anywhere to place a magnet"
         return ''
 
+    def _analyzer_table_text(self):
+        a = self.analyzer
+        period = f"{a.period:.2f} s" if a.period is not None else "—"
+        closure = f"{a.closure_pct:.1f}%" if a.closure_pct is not None else "—"
+        convex = "—" if a.is_convex is None else ("Yes" if a.is_convex else "No")
+        return (
+            f"Orbit Analyzer\n"
+            f"Status:     {a.status}\n"
+            f"Period:     {period}\n"
+            f"Closure:    {closure}\n"
+            f"Convexity:  {convex}\n"
+            f"Crossings:  {a.crossing_count}\n"
+            f"Max radius: {a.max_radius:.2f}"
+        )
+
     def _tick(self, frame):
         self.status_text.set_text(self._status_message())
 
@@ -288,8 +332,39 @@ class InteractiveScene:
         self.trail_line.set_data(self.trail_x, self.trail_y)
         self.particle_dot.set_data([self.particle.position[0]], [self.particle.position[1]])
 
+        self.analyzer_text.set_text(self._analyzer_table_text())
+
+        points = self.analyzer.poincare_points
+        if points:
+            points_array = np.array(points)
+            self.poincare_scatter.set_offsets(points_array)
+            r_vals, vr_vals = points_array[:, 0], points_array[:, 1]
+            r_pad = max((r_vals.max() - r_vals.min()) * 0.1, 0.1)
+            vr_pad = max((vr_vals.max() - vr_vals.min()) * 0.1, 0.1)
+            self.ax_poincare.set_xlim(r_vals.min() - r_pad, r_vals.max() + r_pad)
+            self.ax_poincare.set_ylim(vr_vals.min() - vr_pad, vr_vals.max() + vr_pad)
+
+        hist = self.analyzer.energy_history
+        if hist["t"]:
+            self.ke_line.set_data(hist["t"], hist["ke"])
+            self.pe_line.set_data(hist["t"], hist["pe"])
+            self.e_line.set_data(hist["t"], hist["e"])
+            rel_err_pct = [v * 100 for v in hist["rel_err"]]
+            self.rel_err_line.set_data(hist["t"], rel_err_pct)
+
+            t_min, t_max = hist["t"][0], hist["t"][-1]
+            self.ax_energy.set_xlim(t_min, t_max if t_max > t_min else t_min + 1)
+
+            all_energy = hist["ke"] + hist["pe"] + hist["e"]
+            e_pad = max((max(all_energy) - min(all_energy)) * 0.1, 0.1)
+            self.ax_energy.set_ylim(min(all_energy) - e_pad, max(all_energy) + e_pad)
+
+            self.ax_energy_twin.set_ylim(0, max(rel_err_pct) * 1.2 + 1e-6)
+
         return (self.mesh, self.quiver, self.scatter,
-                self.trail_line, self.particle_dot, self.status_text)
+                self.trail_line, self.particle_dot, self.status_text,
+                self.analyzer_text, self.poincare_scatter,
+                self.ke_line, self.pe_line, self.e_line, self.rel_err_line)
 
     def show(self):
         plt.show()

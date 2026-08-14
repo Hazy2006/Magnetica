@@ -39,3 +39,16 @@ def test_scene_particle_still_respects_wall_bounds_with_analyzer_running():
         scene._tick(i)
         assert -5 <= scene.particle.position[0] <= 5
         assert -5 <= scene.particle.position[1] <= 5
+
+
+def test_analyzer_table_and_side_plots_update_after_ticks():
+    magnets = [Magnet(position=(0, 0), moment=(0, 3), radius=0.1)]
+    scene = InteractiveScene(magnets, xlim=(-5, 5), ylim=(-5, 5), resolution=10, title="test")
+
+    for i in range(600):
+        scene._tick(i)
+
+    assert scene.analyzer_text.get_text() != ""
+    assert "Status" in scene.analyzer_text.get_text()
+    assert len(scene.ke_line.get_xdata()) > 0
+    assert len(scene.rel_err_line.get_xdata()) == len(scene.ke_line.get_xdata())
