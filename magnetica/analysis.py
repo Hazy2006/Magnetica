@@ -84,6 +84,36 @@ class OrbitAnalyzer:
         r = float(np.linalg.norm(rel))
         self._max_radius = max(self._max_radius, r)
 
+        if self._prev_rel is not None:
+            prev_y = self._prev_rel[1]
+            sign_changed = (prev_y <= 0 < rel[1]) or (prev_y >= 0 > rel[1])
+            if sign_changed and rel[0] > 0:
+                debounced = (
+                    self._last_crossing_t is not None
+                    and t - self._last_crossing_t < MIN_CROSSING_INTERVAL
+                )
+                if not debounced:
+                    self._on_crossing(t, r, rel, velocity)
+        self._prev_rel = rel
+        self._lap_points.append(position.copy())
+
+    def _on_crossing(self, t, r, rel, velocity):
+        self._last_crossing_t = t
+        self._crossing_times.append(t)
+        self._crossing_radii.append(r)
+
+        r_hat = rel / r if r > 0 else np.zeros(2)
+        v_r = float(np.dot(velocity, r_hat))
+        self._poincare_points.append((r, v_r))
+
+        if len(self._crossing_times) == 2:
+            self._period = self._crossing_times[1] - self._crossing_times[0]
+            r_prev, r_curr = self._crossing_radii
+            denom = max(r_prev, r_curr, 1e-9)
+            self._closure_pct = 100.0 * (1.0 - abs(r_curr - r_prev) / denom)
+
+        self._lap_points = [self._lap_points[-1]] if self._lap_points else []
+
     @property
     def status(self):
         return self._status
