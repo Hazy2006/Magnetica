@@ -3,10 +3,9 @@ from collections import deque
 
 MIN_CROSSING_INTERVAL = 0.5   # seconds of simulation time
 POINCARE_CAP = 500
+LAP_RADIUS_CAP = 500
 ENERGY_WINDOW_SECONDS = 30.0
-LAP_POINT_CAP = 400   # enough points to judge convexity/self-intersection
-                       # shape without letting analyze_lap's O(n^2) loop
-                       # blow up on long-period orbits
+LAP_POINT_CAP = 400   # caps analyze_lap's O(n^2) segment-crossing loop
 
 
 def _kinetic_energy(velocity, mass=1.0):
@@ -45,13 +44,10 @@ def segments_intersect(p1, p2, p3, p4):
 
 def analyze_lap(points, convex_tolerance=1e-9):
     """Analyze one completed orbit lap's worth of points: whether the
-    polyline is convex and how many times it crosses itself. Returns
-    (None, 0) if there are too few points to judge (fewer than 3).
-
-    A star/rosette shape can turn the same rotational direction at every
-    vertex (just a wider angle than a simple convex shape), so "all turns
-    the same sign" alone is not sufficient to call something convex --
-    it must also not cross itself."""
+    polyline is convex (every turn the same rotational sign, and no
+    self-intersection -- turning-sign alone isn't enough, since a
+    star/rosette shape turns one way at every vertex too) and how many
+    times it crosses itself. Returns (None, 0) if fewer than 3 points."""
     if len(points) < 3:
         return None, 0
 
@@ -96,6 +92,9 @@ class OrbitAnalyzer:
         self._is_convex = None
         self._crossing_count = 0
 
+        self._crossing_events = 0  # increments every crossing, unlike _crossing_count (once per lap)
+        self._lap_radius_hist = deque(maxlen=LAP_RADIUS_CAP)
+
         maxlen = None
         if dt_per_sample:
             maxlen = max(int(energy_window_seconds / dt_per_sample), 1)
@@ -105,6 +104,7 @@ class OrbitAnalyzer:
         self._e_hist = deque(maxlen=maxlen)
         self._rel_err_hist = deque(maxlen=maxlen)
         self._e0 = None
+        self._e_scale = None
 
     def update(self, t, position, velocity, magnets):
         position = np.asarray(position, dtype=float)
@@ -115,7 +115,10 @@ class OrbitAnalyzer:
         e = ke + pe
         if self._e0 is None:
             self._e0 = e
-        rel_err = abs(e - self._e0) / abs(self._e0) if self._e0 != 0 else 0.0
+            # Normalize against |KE|+|PE| rather than E itself, since E can
+            # land near zero for a marginally-bound orbit and blow up the ratio.
+            self._e_scale = max(abs(ke) + abs(pe), 1e-9)
+        rel_err = abs(e - self._e0) / self._e_scale
 
         self._t_hist.append(t)
         self._ke_hist.append(ke)
@@ -131,6 +134,8 @@ class OrbitAnalyzer:
         self._max_radius = max(self._max_radius, r)
 
         if self._prev_rel is not None:
+            # Poincare section: a "crossing" is the particle passing through
+            # y=0 (relative to the magnets' centroid) on the +x side.
             prev_y = self._prev_rel[1]
             sign_changed = (prev_y <= 0 < rel[1]) or (prev_y >= 0 > rel[1])
             if sign_changed and rel[0] > 0:
@@ -149,8 +154,11 @@ class OrbitAnalyzer:
         self._crossing_radii.append(r)
 
         r_hat = rel / r if r > 0 else np.zeros(2)
-        v_r = float(np.dot(velocity, r_hat))
-        self._poincare_points.append((r, v_r))
+        v_r = float(np.dot(velocity, r_hat))  # radial velocity at the crossing
+        self._poincare_points.append((r, v_r))  # (r, v_r) is the Poincare sample
+
+        self._crossing_events += 1
+        self._lap_radius_hist.append((self._crossing_events, r))
 
         if len(self._crossing_times) == 2:
             self._period = self._crossing_times[1] - self._crossing_times[0]
@@ -159,11 +167,6 @@ class OrbitAnalyzer:
             self._closure_pct = 100.0 * (1.0 - abs(r_curr - r_prev) / denom)
 
             self._is_convex, self._crossing_count = analyze_lap(list(self._lap_points))
-
-        seed = self._lap_points[-1] if self._lap_points else None
-        self._lap_points = deque(maxlen=LAP_POINT_CAP)
-        if seed is not None:
-            self._lap_points.append(seed)
 
     @property
     def status(self):
@@ -190,8 +193,18 @@ class OrbitAnalyzer:
         return self._crossing_count
 
     @property
+    def crossing_events(self):
+        """Total ray crossings seen so far (one per Poincare sample)."""
+        return self._crossing_events
+
+    @property
     def poincare_points(self):
         return list(self._poincare_points)
+
+    @property
+    def lap_radius_history(self):
+        """(lap number, radius at that crossing) pairs, oldest first."""
+        return list(self._lap_radius_hist)
 
     @property
     def energy_history(self):
