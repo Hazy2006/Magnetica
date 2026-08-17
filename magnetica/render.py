@@ -1,19 +1,12 @@
-"""
-Visualization — turning field + particle into something you can see.
+"""Interactive field + particle visualization."""
 
-Day 1: static field render (arrows / coloured dots).
-Day 2: colour by strength, multiple sources.
-Day 4: animate the particle in real time.
-Day 5: drag magnets around and watch the field update live.
-Day 6: add/remove/rescale magnets and a continuously animated particle,
-       all driven from one interactive scene.
-"""
+from collections import deque
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.colors import PowerNorm
-from magnetica.field import Magnet, compute_total_field, check_no_overlap, OverlappingMagnetsError
+from magnetica.field import Magnet, compute_attraction_field, compute_bz, check_no_overlap, OverlappingMagnetsError
 from magnetica.particle import Particle
 from magnetica.analysis import OrbitAnalyzer
 
@@ -24,20 +17,25 @@ MIN_STRENGTH = 0.1       # floor so a magnet's direction never becomes undefined
 
 PARTICLE_CHARGE = 1.0
 PARTICLE_DT = 0.01
-PARTICLE_STEPS_PER_FRAME = 5
-TRAIL_LENGTH = 300
-ATTRACTION_STRENGTH = 0.5   # g in Particle.step_attracted; tuned so orbits stay
-                            # bounded well within the default (-5, 5) view
+PARTICLE_STEPS_PER_FRAME = 15
+SPEED_BOOST_FACTOR = 2.5   # substeps-per-frame multiplier while the speed button is held
+TRAIL_LENGTH = 600
+ATTRACTION_STRENGTH = 0.5   # g in Particle.step_attracted
 PARTICLE_ORBIT_OFFSET = np.array([2.5, 0.0])  # start this far from the magnets' centroid
+
+MODE_ATTRACTION = "attraction"   # Particle.step_attracted -- the central pull driving the on-screen orbit
+MODE_LORENTZ = "lorentz"         # Particle.step -- the real magnetic Lorentz-force integrator
+MODE_LABELS = {
+    MODE_ATTRACTION: "Attraction (central pull)",
+    MODE_LORENTZ: "Lorentz (magnetic)",
+}
 
 
 def default_particle_start(magnets, g=ATTRACTION_STRENGTH, offset=PARTICLE_ORBIT_OFFSET):
-    """A starting position/velocity for a roughly circular orbit around
-    the magnets' centroid, treating their combined strength as a single
-    point mass at that starting radius. Multiple magnets and an
-    off-center start mean this is only an approximation, not an exact
-    solution -- but it's close enough to launch the particle into a
-    bounded orbit instead of straight into a magnet or off to infinity."""
+    """Position/velocity for a roughly circular orbit around the magnets'
+    centroid, treating their combined strength as one point mass at the
+    starting radius -- an approximation, but enough to launch a bounded
+    orbit instead of a collision or an escape."""
     centroid = magnet_positions(magnets).mean(axis=0) if magnets else np.zeros(2)
     total_strength = sum(np.linalg.norm(m.moment) for m in magnets) or 1.0
     radius = np.linalg.norm(offset)
@@ -47,13 +45,14 @@ def default_particle_start(magnets, g=ATTRACTION_STRENGTH, offset=PARTICLE_ORBIT
 
 INSTRUCTIONS = (
     "Left-drag: move magnet    |    a, then click: add magnet    |    "
-    "Right-click: remove magnet    |    Scroll over a magnet: adjust strength"
+    "Right-click: remove magnet    |    Scroll over a magnet: adjust strength    |    "
+    "Hold the speed button: 2.5x fast-forward    |    t: toggle Lorentz/attraction mode"
 )
 
 
 def magnet_marker_size(magnet):
     strength = np.linalg.norm(magnet.moment)
-    return 50 + strength * 40  # base size 50, grows with strength
+    return 50 + strength * 40
 
 
 def magnet_positions(magnets):
@@ -62,33 +61,30 @@ def magnet_positions(magnets):
     return np.array([m.position for m in magnets])
 
 
-def compute_field_arrows(magnets, x, y):
-    bx, by = compute_total_field(magnets, x, y)
-    magnitude = np.sqrt(bx ** 2 + by ** 2)
+def compute_field_arrows(magnets, x, y, mode):
+    if mode == MODE_LORENTZ:
+        magnitude = compute_bz(magnets, x, y)
+        return np.zeros_like(x), np.zeros_like(y), magnitude
 
-    # Safely normalize to prevent divide by zero where magnitude is 0
-    mag_safe = np.where(magnitude == 0, 1e-9, magnitude)
-    bx_norm = bx / mag_safe
-    by_norm = by / mag_safe
-    return bx_norm, by_norm, magnitude
+    fx, fy = compute_attraction_field(magnets, x, y, ATTRACTION_STRENGTH)
+    magnitude = np.sqrt(fx ** 2 + fy ** 2)
+    mag_safe = np.where(magnitude == 0, 1e-9, magnitude)  # avoid divide-by-zero
+    return fx / mag_safe, fy / mag_safe, magnitude
 
 
 def strength_norm(magnitude):
-    # Field strength falls off as 1/r^3, so a linear scale makes almost
-    # everything read as the same low colour except right at a magnet.
-    # PowerNorm compresses that range so the falloff halo stays visible,
-    # and capping vmax at a percentile keeps the singularity at a magnet's
-    # center from blowing out the rest of the scale.
+    # Field falls off as 1/r^3, so linear scaling washes out everything but
+    # the magnet cores; PowerNorm compresses the range to keep the falloff
+    # visible, and a percentile vmax stops the core singularity from
+    # blowing out the rest of the scale.
     vmax = max(np.percentile(magnitude, 99), 1e-9)
     return PowerNorm(gamma=0.35, vmin=0, vmax=vmax)
 
 
 class InteractiveScene:
-    """Owns the whole interactive plot: the magnets, the field display,
-    the animated particle, and every mouse/keyboard interaction. A single
-    timer tick redraws everything from current state, so handlers only
-    need to mutate state (move/add/remove/rescale a magnet) rather than
-    each managing their own redraw."""
+    """Owns the interactive plot: magnets, field display, animated particle,
+    and mouse/keyboard handling. Event handlers only mutate state; the
+    animation timer's tick does all the redrawing."""
 
     def __init__(self, magnets, xlim, ylim, resolution, title):
         check_no_overlap(magnets)
@@ -101,24 +97,34 @@ class InteractiveScene:
 
         self.dragged_index = None
         self.add_armed = False
+        self.speed_boost = False
+        self.mode = MODE_ATTRACTION
+        self.escaped = False
 
         start_position, start_velocity = default_particle_start(magnets)
         self.particle = Particle(position=start_position,
                                   velocity=start_velocity,
                                   charge=PARTICLE_CHARGE)
-        self.trail_x = []
-        self.trail_y = []
+        self.trail_x = deque(maxlen=TRAIL_LENGTH)
+        self.trail_y = deque(maxlen=TRAIL_LENGTH)
         self.sim_time = 0.0
+        # g/dt_per_sample assume the attraction model's central-force potential;
+        # in Lorentz mode the displayed PE/status are not physically meaningful,
+        # since compute_bz has no corresponding potential energy.
         self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT)
 
+        self._base_title = title
         self._build_figure(title)
         self._connect_events()
 
         self.animation = animation.FuncAnimation(
             self.fig, self._tick, interval=20, blit=False, cache_frame_data=False)
 
+    def _field_label(self):
+        return 'B_z, out of plane (arb. units)' if self.mode == MODE_LORENTZ else 'attraction field strength (arb. units)'
+
     def _build_figure(self, title):
-        bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y)
+        bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y, self.mode)
 
         self.fig = plt.figure(figsize=(14, 8))
         gs = self.fig.add_gridspec(
@@ -126,7 +132,7 @@ class InteractiveScene:
             left=0.06, right=0.97, top=0.93, bottom=0.18,
             wspace=0.30, hspace=0.40,
         )
-        self.ax_poincare = self.fig.add_subplot(gs[0, 0])
+        self.ax_lap = self.fig.add_subplot(gs[0, 0])
         self.ax_energy = self.fig.add_subplot(gs[1, 0])
         self.ax_main = self.fig.add_subplot(gs[:, 1])
 
@@ -134,6 +140,7 @@ class InteractiveScene:
                                              shading='gouraud', norm=strength_norm(magnitude), zorder=0)
         self.quiver = self.ax_main.quiver(self.x, self.y, bx_norm, by_norm,
                                            color='white', alpha=0.8, zorder=2)
+        self.quiver.set_visible(self.mode != MODE_LORENTZ)
         self.scatter = self.ax_main.scatter(*magnet_positions(self.magnets).T,
                                              c='red', s=[magnet_marker_size(m) for m in self.magnets],
                                              edgecolors='black', zorder=5, picker=True)
@@ -141,7 +148,7 @@ class InteractiveScene:
         self.trail_line, = self.ax_main.plot([], [], color='deepskyblue', alpha=0.6, zorder=4)
         self.particle_dot, = self.ax_main.plot([], [], 'go', markersize=8, zorder=6)
 
-        self.fig.colorbar(self.mesh, ax=self.ax_main, label='field strength')
+        self.colorbar = self.fig.colorbar(self.mesh, ax=self.ax_main, label=self._field_label())
         self.ax_main.set_xlim(*self.xlim)
         self.ax_main.set_ylim(*self.ylim)
         self.ax_main.set_xlabel('x')
@@ -159,23 +166,54 @@ class InteractiveScene:
 
         self.fig.text(0.5, 0.02, INSTRUCTIONS, ha='center', va='bottom', fontsize=9)
 
+        self.ax_speed = self.fig.add_axes([0.435, 0.075, 0.13, 0.05])
+        self.ax_speed.set_xticks([])
+        self.ax_speed.set_yticks([])
+        self.ax_speed.set_facecolor('dimgray')
+        for spine in self.ax_speed.spines.values():
+            spine.set_color('white')
+        self.speed_label = self.ax_speed.text(
+            0.5, 0.5, f'Hold: {SPEED_BOOST_FACTOR:g}x speed',
+            transform=self.ax_speed.transAxes, ha='center', va='center',
+            fontsize=8, color='white', fontweight='bold')
+
+        self.ax_mode = self.fig.add_axes([0.59, 0.075, 0.16, 0.05])
+        self.ax_mode.set_xticks([])
+        self.ax_mode.set_yticks([])
+        self.ax_mode.set_facecolor('dimgray')
+        for spine in self.ax_mode.spines.values():
+            spine.set_color('white')
+        self.mode_label = self.ax_mode.text(
+            0.5, 0.5, '', transform=self.ax_mode.transAxes, ha='center', va='center',
+            fontsize=8, color='white', fontweight='bold')
+
         self.analyzer_text = self.ax_main.text(
             0.02, 0.02, '', transform=self.ax_main.transAxes, va='bottom', ha='left',
             fontsize=8, family='monospace', color='white',
             bbox=dict(facecolor='black', alpha=0.6, pad=4))
 
-        self.poincare_scatter = self.ax_poincare.scatter([], [], s=8, c='deepskyblue')
-        self.ax_poincare.set_title('Poincaré section', fontsize=9)
-        self.ax_poincare.set_xlabel('r', fontsize=8)
-        self.ax_poincare.set_ylabel('radial velocity', fontsize=8)
-        self.ax_poincare.tick_params(labelsize=7)
+        self.escape_text = self.ax_main.text(
+            0.5, 0.5, '', transform=self.ax_main.transAxes, va='center', ha='center',
+            fontsize=13, color='red', fontweight='bold',
+            bbox=dict(facecolor='black', alpha=0.75, pad=6))
+
+        self.lap_line, = self.ax_lap.plot([], [], color='deepskyblue', marker='o',
+                                           markersize=3, linewidth=1)
+        self.ax_lap.set_title('Orbit radius per lap', fontsize=9)
+        self.ax_lap.set_xlabel('lap #', fontsize=8)
+        self.ax_lap.set_ylabel('radius at crossing', fontsize=8)
+        self.ax_lap.tick_params(labelsize=7)
+        self.ax_lap.text(
+            0.5, 0.97, 'flat = periodic   drifting = precessing   jagged = chaotic',
+            transform=self.ax_lap.transAxes, ha='center', va='top',
+            fontsize=6, color='gray')
 
         self.ke_line, = self.ax_energy.plot([], [], color='orange', label='KE')
         self.pe_line, = self.ax_energy.plot([], [], color='deepskyblue', label='PE')
         self.e_line, = self.ax_energy.plot([], [], color='white', label='Total E')
-        self.ax_energy.set_title('Energy monitor', fontsize=9)
+        self.ax_energy.set_title('Energy monitor — KE + PE (arb. units)', fontsize=9)
         self.ax_energy.set_xlabel('time (s)', fontsize=8)
-        self.ax_energy.set_ylabel('energy', fontsize=8)
+        self.ax_energy.set_ylabel('energy (arb. units)', fontsize=8)
         self.ax_energy.tick_params(labelsize=7)
 
         self.ax_energy_twin = self.ax_energy.twinx()
@@ -231,6 +269,10 @@ class InteractiveScene:
     # --- event handlers: mutate state only, the animation tick redraws ---
 
     def on_press(self, event):
+        if event.button == 1 and event.inaxes == self.ax_speed:
+            self.speed_boost = True
+            return
+
         if event.inaxes != self.ax_main or event.xdata is None:
             return
 
@@ -240,6 +282,7 @@ class InteractiveScene:
                 if self.dragged_index == index:
                     self.dragged_index = None
                 del self.magnets[index]
+                self._reset_analyzer()
             return
 
         if event.button == 1:
@@ -256,6 +299,7 @@ class InteractiveScene:
         except OverlappingMagnetsError:
             return  # spot is taken; ignore the click rather than crash
         self.magnets.append(candidate)
+        self._reset_analyzer()
 
     def on_motion(self, event):
         if self.dragged_index is None or event.inaxes != self.ax_main or event.xdata is None:
@@ -266,6 +310,7 @@ class InteractiveScene:
 
     def on_release(self, event):
         self.dragged_index = None
+        self.speed_boost = False
 
     def on_scroll(self, event):
         if event.inaxes != self.ax_main or event.xdata is None:
@@ -283,6 +328,32 @@ class InteractiveScene:
     def on_key(self, event):
         if event.key == 'a':
             self.add_armed = not self.add_armed
+        elif event.key == 't':
+            self._toggle_mode()
+
+    def _toggle_mode(self):
+        """Switch physics model. Resets the particle to the default launch
+        state, the trail, and the analyzer so no history mixes across the
+        two force laws."""
+        self.mode = MODE_LORENTZ if self.mode == MODE_ATTRACTION else MODE_ATTRACTION
+
+        start_position, start_velocity = default_particle_start(self.magnets)
+        self.particle = Particle(position=start_position,
+                                  velocity=start_velocity,
+                                  charge=PARTICLE_CHARGE)
+        self.trail_x = deque(maxlen=TRAIL_LENGTH)
+        self.trail_y = deque(maxlen=TRAIL_LENGTH)
+        self.escaped = False
+        self._reset_analyzer()
+
+    def _reset_analyzer(self):
+        """Rebaselines the energy monitor. The magnet configuration is part
+        of the potential-energy calculation, so adding/removing a magnet
+        (or switching physics models) is a legitimate energy discontinuity,
+        not integration error -- without this, the analyzer keeps comparing
+        against a baseline from before the change and the relative error
+        it reports never recovers."""
+        self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT)
 
     # --- redraw ---
 
@@ -291,6 +362,10 @@ class InteractiveScene:
             return "Add mode armed — click anywhere to place a magnet"
         return ''
 
+    def _out_of_bounds(self, position):
+        x, y = position
+        return not (self.xlim[0] <= x <= self.xlim[1] and self.ylim[0] <= y <= self.ylim[1])
+
     def _analyzer_table_text(self):
         a = self.analyzer
         period = f"{a.period:.2f} s" if a.period is not None else "—"
@@ -298,12 +373,14 @@ class InteractiveScene:
         convex = "—" if a.is_convex is None else ("Yes" if a.is_convex else "No")
         return (
             f"Orbit Analyzer\n"
-            f"Status:     {a.status}\n"
-            f"Period:     {period}\n"
-            f"Closure:    {closure}\n"
-            f"Convexity:  {convex}\n"
-            f"Crossings:  {a.crossing_count}\n"
-            f"Max radius: {a.max_radius:.2f}"
+            f"Mode:        {MODE_LABELS[self.mode]}\n"
+            f"Status:      {a.status}\n"
+            f"Period:      {period}\n"
+            f"Closure:     {closure}\n"
+            f"Convexity:   {convex}\n"
+            f"Crossings:   {a.crossing_events}\n"
+            f"Self-cross:  {a.crossing_count}\n"
+            f"Max radius:  {a.max_radius:.2f}"
         )
 
     def _tick(self, frame):
@@ -313,36 +390,61 @@ class InteractiveScene:
         self.scatter.set_offsets(positions)
         self.scatter.set_sizes([magnet_marker_size(m) for m in self.magnets])
 
-        bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y)
+        bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y, self.mode)
         self.mesh.set_array(magnitude.ravel())
         self.mesh.set_norm(strength_norm(magnitude))
         self.quiver.set_UVC(bx_norm, by_norm)
+        self.quiver.set_visible(self.mode != MODE_LORENTZ)
+        self.colorbar.set_label(self._field_label())
 
-        for _ in range(PARTICLE_STEPS_PER_FRAME):
-            self.particle.step_attracted(self.magnets, PARTICLE_DT, g=ATTRACTION_STRENGTH)
-            self.particle.clamp_to_bounds(self.xlim, self.ylim)
-            self.sim_time += PARTICLE_DT
-            self.analyzer.update(self.sim_time, self.particle.position, self.particle.velocity, self.magnets)
+        self.ax_speed.set_facecolor('orangered' if self.speed_boost else 'dimgray')
+        self.mode_label.set_text(f't: {MODE_LABELS[self.mode]}')
+        self.ax_main.set_title(f'{self._base_title} — {MODE_LABELS[self.mode]}')
 
-        self.trail_x.append(self.particle.position[0])
-        self.trail_y.append(self.particle.position[1])
-        if len(self.trail_x) > TRAIL_LENGTH:
-            self.trail_x.pop(0)
-            self.trail_y.pop(0)
-        self.trail_line.set_data(self.trail_x, self.trail_y)
-        self.particle_dot.set_data([self.particle.position[0]], [self.particle.position[1]])
+        steps = PARTICLE_STEPS_PER_FRAME
+        if self.speed_boost:
+            steps = int(round(PARTICLE_STEPS_PER_FRAME * SPEED_BOOST_FACTOR))
+
+        if not self.escaped:
+            for _ in range(steps):
+                if self.mode == MODE_LORENTZ:
+                    px, py = self.particle.position
+                    bz = compute_bz(self.magnets, np.array([px]), np.array([py]))[0]
+                    self.particle.step(bz, PARTICLE_DT)
+                    if self._out_of_bounds(self.particle.position):
+                        # Lorentz mode has no restoring force, so leaving the
+                        # frame means it's genuinely escaping, not a close
+                        # encounter to bounce back from (see clamp_to_bounds
+                        # in attraction mode). Stop rather than let step()'s
+                        # per-step energy leak keep compounding unnoticed.
+                        self.escaped = True
+                        self.particle.clamp_to_bounds(self.xlim, self.ylim)  # pin the dot at the wall it left through
+                        break
+                else:
+                    self.particle.step_attracted(self.magnets, PARTICLE_DT, g=ATTRACTION_STRENGTH)
+                    self.particle.clamp_to_bounds(self.xlim, self.ylim)
+                self.sim_time += PARTICLE_DT
+                self.analyzer.update(self.sim_time, self.particle.position, self.particle.velocity, self.magnets)
+
+            self.trail_x.append(self.particle.position[0])
+            self.trail_y.append(self.particle.position[1])
+            self.trail_line.set_data(self.trail_x, self.trail_y)
+            self.particle_dot.set_data([self.particle.position[0]], [self.particle.position[1]])
+
+        self.escape_text.set_text(
+            "PARTICLE ESCAPED — simulation stopped\npress t to reset" if self.escaped else '')
 
         self.analyzer_text.set_text(self._analyzer_table_text())
 
-        points = self.analyzer.poincare_points
-        if points:
-            points_array = np.array(points)
-            self.poincare_scatter.set_offsets(points_array)
-            r_vals, vr_vals = points_array[:, 0], points_array[:, 1]
-            r_pad = max((r_vals.max() - r_vals.min()) * 0.1, 0.1)
-            vr_pad = max((vr_vals.max() - vr_vals.min()) * 0.1, 0.1)
-            self.ax_poincare.set_xlim(r_vals.min() - r_pad, r_vals.max() + r_pad)
-            self.ax_poincare.set_ylim(vr_vals.min() - vr_pad, vr_vals.max() + vr_pad)
+        lap_hist = self.analyzer.lap_radius_history
+        if lap_hist:
+            laps, radii = zip(*lap_hist)
+            self.lap_line.set_data(laps, radii)
+            lap_min, lap_max = min(laps), max(laps)
+            r_min, r_max = min(radii), max(radii)
+            r_pad = max((r_max - r_min) * 0.1, 0.1)
+            self.ax_lap.set_xlim(lap_min - 0.5, lap_max + 0.5 if lap_max > lap_min else lap_min + 1.5)
+            self.ax_lap.set_ylim(r_min - r_pad, r_max + r_pad)
 
         hist = self.analyzer.energy_history
         if hist["t"]:
@@ -363,7 +465,7 @@ class InteractiveScene:
 
         return (self.mesh, self.quiver, self.scatter,
                 self.trail_line, self.particle_dot, self.status_text,
-                self.analyzer_text, self.poincare_scatter,
+                self.analyzer_text, self.mode_label, self.escape_text, self.lap_line,
                 self.ke_line, self.pe_line, self.e_line, self.rel_err_line)
 
     def show(self):
@@ -371,10 +473,8 @@ class InteractiveScene:
 
 
 def render_interactive(magnets, xlim=(-5, 5), ylim=(-5, 5), resolution=25, title="Magnetica — field of magnets"):
-    """Render magnets and their combined field, with a continuously
-    animated particle and full mouse/keyboard control: drag magnets to
-    move them, press 'a' then click to add one, right-click to remove
-    one, and scroll over a magnet to adjust its strength."""
+    """Render magnets and their combined field with a live animated particle
+    and mouse/keyboard controls (see INSTRUCTIONS)."""
     scene = InteractiveScene(magnets, xlim, ylim, resolution, title)
     scene.show()
     return scene
