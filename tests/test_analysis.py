@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 
-from magnetica.analysis import OrbitAnalyzer, LAP_POINT_CAP, segments_intersect, analyze_lap
+from magnetica.analysis import OrbitAnalyzer, LAP_POINT_CAP, MODE_ATTRACTION, MODE_LORENTZ, segments_intersect, analyze_lap
 from magnetica.field import Magnet
 
 
@@ -17,6 +17,32 @@ def test_status_is_unbound_for_fast_far_particle():
     analyzer = OrbitAnalyzer(g=1.0)
     analyzer.update(0.0, position=(2.0, 0.0), velocity=(10.0, 0.0), magnets=magnets)
     assert analyzer.status == "Unbound"
+
+
+def test_lorentz_mode_analyzer_reports_no_status_or_potential_energy():
+    magnets = [Magnet(position=(0, 0), moment=(0, 1), radius=0.1)]
+    analyzer = OrbitAnalyzer(g=1.0, mode=MODE_LORENTZ)
+    analyzer.update(0.0, position=(2.0, 0.0), velocity=(0.0, 1.0), magnets=magnets)
+
+    assert analyzer.status is None
+    hist = analyzer.energy_history
+    assert hist["ke"] == [pytest.approx(0.5)]
+    assert hist["pe"] == []
+    assert hist["e"] == []
+    assert hist["rel_err"] == []
+
+
+def test_attraction_mode_analyzer_default_still_reports_status_and_pe():
+    # Default mode is unchanged -- existing call sites like
+    # OrbitAnalyzer(g=1.0) elsewhere in this file must keep working.
+    magnets = [Magnet(position=(0, 0), moment=(0, 1), radius=0.1)]
+    analyzer = OrbitAnalyzer(g=1.0)
+    analyzer.update(0.0, position=(2.0, 0.0), velocity=(0.0, 0.0), magnets=magnets)
+
+    assert analyzer.status == "Bounded"
+    hist = analyzer.energy_history
+    assert len(hist["pe"]) == 1
+    assert len(hist["e"]) == 1
 
 
 def test_max_radius_tracks_running_maximum_from_centroid():

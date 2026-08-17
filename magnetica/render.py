@@ -108,10 +108,7 @@ class InteractiveScene:
         self.trail_x = deque(maxlen=TRAIL_LENGTH)
         self.trail_y = deque(maxlen=TRAIL_LENGTH)
         self.sim_time = 0.0
-        # g/dt_per_sample assume the attraction model's central-force potential;
-        # in Lorentz mode the displayed PE/status are not physically meaningful,
-        # since compute_bz has no corresponding potential energy.
-        self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT)
+        self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT, mode=self.mode)
 
         self._base_title = title
         self._build_figure(title)
@@ -353,7 +350,7 @@ class InteractiveScene:
         not integration error -- without this, the analyzer keeps comparing
         against a baseline from before the change and the relative error
         it reports never recovers."""
-        self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT)
+        self.analyzer = OrbitAnalyzer(g=ATTRACTION_STRENGTH, dt_per_sample=PARTICLE_DT, mode=self.mode)
 
     # --- redraw ---
 
@@ -371,10 +368,11 @@ class InteractiveScene:
         period = f"{a.period:.2f} s" if a.period is not None else "—"
         closure = f"{a.closure_pct:.1f}%" if a.closure_pct is not None else "—"
         convex = "—" if a.is_convex is None else ("Yes" if a.is_convex else "No")
+        status_line = f"Status:      {a.status}\n" if a.status is not None else ""
         return (
             f"Orbit Analyzer\n"
             f"Mode:        {MODE_LABELS[self.mode]}\n"
-            f"Status:      {a.status}\n"
+            f"{status_line}"
             f"Period:      {period}\n"
             f"Closure:     {closure}\n"
             f"Convexity:   {convex}\n"
@@ -449,19 +447,29 @@ class InteractiveScene:
         hist = self.analyzer.energy_history
         if hist["t"]:
             self.ke_line.set_data(hist["t"], hist["ke"])
-            self.pe_line.set_data(hist["t"], hist["pe"])
-            self.e_line.set_data(hist["t"], hist["e"])
-            rel_err_pct = [v * 100 for v in hist["rel_err"]]
-            self.rel_err_line.set_data(hist["t"], rel_err_pct)
-
             t_min, t_max = hist["t"][0], hist["t"][-1]
             self.ax_energy.set_xlim(t_min, t_max if t_max > t_min else t_min + 1)
 
-            all_energy = hist["ke"] + hist["pe"] + hist["e"]
-            e_pad = max((max(all_energy) - min(all_energy)) * 0.1, 0.1)
-            self.ax_energy.set_ylim(min(all_energy) - e_pad, max(all_energy) + e_pad)
+            if self.mode == MODE_LORENTZ:
+                self.pe_line.set_data([], [])
+                self.e_line.set_data([], [])
+                self.rel_err_line.set_data([], [])
+                ke_pad = max((max(hist["ke"]) - min(hist["ke"])) * 0.1, 0.1)
+                self.ax_energy.set_ylim(min(hist["ke"]) - ke_pad, max(hist["ke"]) + ke_pad)
+                self.ax_energy_twin.set_ylim(0, 1)
+            else:
+                self.pe_line.set_data(hist["t"], hist["pe"])
+                self.e_line.set_data(hist["t"], hist["e"])
+                rel_err_pct = [v * 100 for v in hist["rel_err"]]
+                self.rel_err_line.set_data(hist["t"], rel_err_pct)
 
-            self.ax_energy_twin.set_ylim(0, max(rel_err_pct) * 1.2 + 1e-6)
+                all_energy = hist["ke"] + hist["pe"] + hist["e"]
+                e_pad = max((max(all_energy) - min(all_energy)) * 0.1, 0.1)
+                self.ax_energy.set_ylim(min(all_energy) - e_pad, max(all_energy) + e_pad)
+                self.ax_energy_twin.set_ylim(0, max(rel_err_pct) * 1.2 + 1e-6)
+        self.ax_energy.set_title(
+            'Energy monitor — KE only (Lorentz: no scalar potential)' if self.mode == MODE_LORENTZ
+            else 'Energy monitor — KE + PE (arb. units)', fontsize=9)
 
         return (self.mesh, self.quiver, self.scatter,
                 self.trail_line, self.particle_dot, self.status_text,

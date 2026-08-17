@@ -7,6 +7,9 @@ LAP_RADIUS_CAP = 500
 ENERGY_WINDOW_SECONDS = 30.0
 LAP_POINT_CAP = 400   # caps analyze_lap's O(n^2) segment-crossing loop
 
+MODE_ATTRACTION = "attraction"
+MODE_LORENTZ = "lorentz"
+
 
 def _kinetic_energy(velocity, mass=1.0):
     velocity = np.asarray(velocity, dtype=float)
@@ -74,8 +77,9 @@ class OrbitAnalyzer:
     (t, position, velocity, magnets) physics substeps. Has no matplotlib
     dependency so it can be tested and reasoned about on its own."""
 
-    def __init__(self, g, energy_window_seconds=ENERGY_WINDOW_SECONDS, dt_per_sample=None):
+    def __init__(self, g, energy_window_seconds=ENERGY_WINDOW_SECONDS, dt_per_sample=None, mode=MODE_ATTRACTION):
         self.g = g
+        self.mode = mode
         self._max_radius = 0.0
         self._status = "Bounded"
 
@@ -111,22 +115,25 @@ class OrbitAnalyzer:
         velocity = np.asarray(velocity, dtype=float)
 
         ke = _kinetic_energy(velocity)
-        pe = _potential_energy(position, magnets, self.g)
-        e = ke + pe
-        if self._e0 is None:
-            self._e0 = e
-            # Normalize against |KE|+|PE| rather than E itself, since E can
-            # land near zero for a marginally-bound orbit and blow up the ratio.
-            self._e_scale = max(abs(ke) + abs(pe), 1e-9)
-        rel_err = abs(e - self._e0) / self._e_scale
-
         self._t_hist.append(t)
         self._ke_hist.append(ke)
-        self._pe_hist.append(pe)
-        self._e_hist.append(e)
-        self._rel_err_hist.append(rel_err)
 
-        self._status = "Bounded" if e < 0 else "Unbound"
+        if self.mode == MODE_LORENTZ:
+            self._status = None
+        else:
+            pe = _potential_energy(position, magnets, self.g)
+            e = ke + pe
+            if self._e0 is None:
+                self._e0 = e
+                # Normalize against |KE|+|PE| rather than E itself, since E can
+                # land near zero for a marginally-bound orbit and blow up the ratio.
+                self._e_scale = max(abs(ke) + abs(pe), 1e-9)
+            rel_err = abs(e - self._e0) / self._e_scale
+
+            self._pe_hist.append(pe)
+            self._e_hist.append(e)
+            self._rel_err_hist.append(rel_err)
+            self._status = "Bounded" if e < 0 else "Unbound"
 
         centroid = _magnets_centroid(magnets)
         rel = position - centroid
