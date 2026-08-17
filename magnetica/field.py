@@ -20,21 +20,19 @@ class Magnet:
     def __init__(self, position, moment, radius=0.1):
         self.position = np.array(position, dtype=float)
         self.moment = np.array(moment, dtype=float)
-        self.radius = radius        # physical size — no longer a point source
+        self.radius = radius
 
 def compute_dipole_field(magnet, x, y):
     rx = x - magnet.position[0]
     ry = y - magnet.position[1]
 
     r_sq = rx ** 2 + ry ** 2
-    # Safety mechanism to prevent divide-by-zero
-    r_sq[r_sq == 0] = 1e-9
+    r_sq[r_sq == 0] = 1e-9  # avoid divide-by-zero at the magnet's center
     r_mag = np.sqrt(r_sq)
 
-    # Dot product of the magnetic moment and the distance vector
     dot_product = magnet.moment[0] * rx + magnet.moment[1] * ry
 
-    # The magnetic dipole formulas
+    # 2D magnetic dipole field
     bx = (3 * rx * dot_product / r_mag ** 5) - (magnet.moment[0] / r_mag ** 3)
     by = (3 * ry * dot_product / r_mag ** 5) - (magnet.moment[1] / r_mag ** 3)
 
@@ -65,3 +63,20 @@ def compute_bz(magnets, x, y):
         strength = np.sqrt(magnet.moment[0]**2 + magnet.moment[1]**2)
         bz_total += strength / (r_sq + magnet.radius**2)
     return bz_total
+
+def compute_attraction_field(magnets, x, y, g):
+    """Vectorized form of Particle._attraction_acceleration's central-pull
+    formula, over a grid -- drives the attraction-mode field display so it
+    matches the force actually steering the particle, instead of the
+    unrelated dipole field."""
+    fx_total = np.zeros_like(x, dtype=float)
+    fy_total = np.zeros_like(y, dtype=float)
+    for magnet in magnets:
+        offset_x = magnet.position[0] - x
+        offset_y = magnet.position[1] - y
+        strength = np.sqrt(magnet.moment[0] ** 2 + magnet.moment[1] ** 2)
+        r_sq = offset_x ** 2 + offset_y ** 2
+        softened = (r_sq + magnet.radius ** 2) ** 1.5
+        fx_total += g * strength * offset_x / softened
+        fy_total += g * strength * offset_y / softened
+    return fx_total, fy_total
