@@ -12,7 +12,7 @@ def check_no_overlap(magnets):
             min_dist = magnets[i].radius + magnets[j].radius
             if dist < min_dist:
                 raise OverlappingMagnetsError(
-                    "magnets overlap, please change coordinates in the code"
+                    "magnets overlap — drag one apart before continuing"
                 )
 
 
