@@ -18,4 +18,10 @@ attraction mode, or the `B_z` magnitude heatmap (no arrows — it's a
 scalar, out-of-plane field with no in-plane direction to draw) in
 Lorentz mode. It never shows a field that isn't the one in effect.
 
+Lorentz mode's tuned launch state significantly delays escape compared
+to an untuned start, but the particle will still eventually leave the
+visible domain -- a field that falls off as 1/r² can steer a particle
+but can't fully recapture one already drifting outward, so eventual
+escape is expected physical behavior, not a bug.
+
 Run with `python -m magnetica.main`.

@@ -22,8 +22,8 @@ SPEED_BOOST_FACTOR = 2.5   # substeps-per-frame multiplier while the speed butto
 TRAIL_LENGTH = 600
 ATTRACTION_STRENGTH = 0.5   # g in Particle.step_attracted
 PARTICLE_ORBIT_OFFSET = np.array([2.5, 0.0])  # start this far from the magnets' centroid
-LORENTZ_ORBIT_RADIUS = 2.5   # empirically bounded start (see Lorentz tuning experiment)
-LORENTZ_ORBIT_SPEED = 1.0    # empirically bounded start (see Lorentz tuning experiment)
+LORENTZ_ORBIT_RADIUS = 2.5   # tuned to substantially delay escape (see Lorentz tuning experiment)
+LORENTZ_ORBIT_SPEED = 1.0    # tuned to substantially delay escape (see Lorentz tuning experiment)
 
 MODE_ATTRACTION = "attraction"   # Particle.step_attracted -- the central pull driving the on-screen orbit
 MODE_LORENTZ = "lorentz"         # Particle.step -- the real magnetic Lorentz-force integrator
@@ -47,8 +47,11 @@ def default_particle_start(magnets, g=ATTRACTION_STRENGTH, offset=PARTICLE_ORBIT
 
 
 def default_lorentz_start(magnets, radius=LORENTZ_ORBIT_RADIUS, speed=LORENTZ_ORBIT_SPEED):
-    """Launch state tuned (see the Lorentz tuning experiment) to stay
-    bounded rather than escape almost immediately."""
+    """Launch state tuned (see the Lorentz tuning experiment) to
+    substantially delay escape compared to an untuned launch -- it
+    still escapes eventually (~318s of sim time in the swept
+    configuration), since no combination in the swept range proved
+    genuinely bounded."""
     centroid = magnet_positions(magnets).mean(axis=0) if magnets else np.zeros(2)
     return centroid + np.array([radius, 0.0]), np.array([0.0, speed])
 
@@ -433,8 +436,8 @@ class InteractiveScene:
                         # Lorentz mode has no restoring force, so leaving the
                         # frame means it's genuinely escaping, not a close
                         # encounter to bounce back from (see clamp_to_bounds
-                        # in attraction mode). Stop rather than let step()'s
-                        # per-step energy leak keep compounding unnoticed.
+                        # in attraction mode). Freeze here rather than let it
+                        # keep drifting further off-screen.
                         self.escaped = True
                         self.particle.clamp_to_bounds(self.xlim, self.ylim)  # pin the dot at the wall it left through
                         break

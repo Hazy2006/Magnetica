@@ -50,6 +50,26 @@ def test_particle_speed_is_conserved_by_rotation_step():
         assert np.linalg.norm(p.velocity) == pytest.approx(initial_speed, rel=1e-9)
 
 
+def test_particle_gyration_matches_lorentz_force_direction_and_rate():
+    """Speed conservation alone can't catch a flipped sign, dropped
+    charge, or mis-scaled dt -- any rotation preserves |v|. This checks
+    the actual instantaneous acceleration matches q(v x B)/m."""
+    magnets = [Magnet(position=(0, 0), moment=(0, 2), radius=0.1)]
+    p = Particle(position=(1, 0), velocity=(0, 2), charge=1.0)
+    bz = compute_bz(magnets, np.array([1.0]), np.array([0.0]))[0]
+    v0 = p.velocity.copy()
+    dt = 1e-6
+    p.step(bz, dt)
+    dv_dt = (p.velocity - v0) / dt
+    expected = (p.charge * bz / p.mass) * np.array([v0[1], -v0[0]])
+    # abs=1e-5 absorbs the forward-difference's inherent O(dt) truncation
+    # noise on the component whose expected value is exactly zero; a real
+    # sign flip, dropped charge, or mis-scaled dt produces errors many
+    # orders of magnitude larger than this and still fails the check.
+    assert dv_dt[0] == pytest.approx(expected[0], rel=1e-4, abs=1e-5)
+    assert dv_dt[1] == pytest.approx(expected[1], rel=1e-4, abs=1e-5)
+
+
 def test_particle_clamps_to_bounds_and_reflects_velocity():
     xlim, ylim = (-5, 5), (-5, 5)
     p = Particle(position=(4.99, 0), velocity=(10, 0), charge=1.0)

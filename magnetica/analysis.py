@@ -81,7 +81,7 @@ class OrbitAnalyzer:
         self.g = g
         self.mode = mode
         self._max_radius = 0.0
-        self._status = "Bounded"
+        self._status = None if mode == MODE_LORENTZ else "Bounded"
 
         self._prev_rel = None
         self._last_crossing_t = None
