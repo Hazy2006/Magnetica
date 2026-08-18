@@ -99,6 +99,7 @@ class InteractiveScene:
         self.add_armed = False
         self.speed_boost = False
         self.mode = MODE_ATTRACTION
+        self._field_dirty = True
         self.escaped = False
 
         start_position, start_velocity = default_particle_start(magnets)
@@ -279,6 +280,7 @@ class InteractiveScene:
                 if self.dragged_index == index:
                     self.dragged_index = None
                 del self.magnets[index]
+                self._field_dirty = True
                 self._reset_analyzer()
             return
 
@@ -296,6 +298,7 @@ class InteractiveScene:
         except OverlappingMagnetsError:
             return  # spot is taken; ignore the click rather than crash
         self.magnets.append(candidate)
+        self._field_dirty = True
         self._reset_analyzer()
 
     def on_motion(self, event):
@@ -304,6 +307,7 @@ class InteractiveScene:
         candidate = np.array([event.xdata, event.ydata])
         candidate = self._resolve_overlap(self.dragged_index, candidate)
         self.magnets[self.dragged_index].position = candidate
+        self._field_dirty = True
 
     def on_release(self, event):
         self.dragged_index = None
@@ -321,6 +325,7 @@ class InteractiveScene:
         factor = SCROLL_FACTOR if event.button == 'up' else 1 / SCROLL_FACTOR
         new_strength = max(strength * factor, MIN_STRENGTH)
         magnet.moment = direction * new_strength
+        self._field_dirty = True
 
     def on_key(self, event):
         if event.key == 'a':
@@ -333,6 +338,7 @@ class InteractiveScene:
         state, the trail, and the analyzer so no history mixes across the
         two force laws."""
         self.mode = MODE_LORENTZ if self.mode == MODE_ATTRACTION else MODE_ATTRACTION
+        self._field_dirty = True
 
         start_position, start_velocity = default_particle_start(self.magnets)
         self.particle = Particle(position=start_position,
@@ -388,12 +394,14 @@ class InteractiveScene:
         self.scatter.set_offsets(positions)
         self.scatter.set_sizes([magnet_marker_size(m) for m in self.magnets])
 
-        bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y, self.mode)
-        self.mesh.set_array(magnitude.ravel())
-        self.mesh.set_norm(strength_norm(magnitude))
-        self.quiver.set_UVC(bx_norm, by_norm)
-        self.quiver.set_visible(self.mode != MODE_LORENTZ)
-        self.colorbar.set_label(self._field_label())
+        if self._field_dirty:
+            bx_norm, by_norm, magnitude = compute_field_arrows(self.magnets, self.x, self.y, self.mode)
+            self.mesh.set_array(magnitude.ravel())
+            self.mesh.set_norm(strength_norm(magnitude))
+            self.quiver.set_UVC(bx_norm, by_norm)
+            self.quiver.set_visible(self.mode != MODE_LORENTZ)
+            self.colorbar.set_label(self._field_label())
+            self._field_dirty = False
 
         self.ax_speed.set_facecolor('orangered' if self.speed_boost else 'dimgray')
         self.mode_label.set_text(f't: {MODE_LABELS[self.mode]}')
