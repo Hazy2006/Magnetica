@@ -22,6 +22,8 @@ SPEED_BOOST_FACTOR = 2.5   # substeps-per-frame multiplier while the speed butto
 TRAIL_LENGTH = 600
 ATTRACTION_STRENGTH = 0.5   # g in Particle.step_attracted
 PARTICLE_ORBIT_OFFSET = np.array([2.5, 0.0])  # start this far from the magnets' centroid
+LORENTZ_ORBIT_RADIUS = 2.5   # empirically bounded start (see Lorentz tuning experiment)
+LORENTZ_ORBIT_SPEED = 1.0    # empirically bounded start (see Lorentz tuning experiment)
 
 MODE_ATTRACTION = "attraction"   # Particle.step_attracted -- the central pull driving the on-screen orbit
 MODE_LORENTZ = "lorentz"         # Particle.step -- the real magnetic Lorentz-force integrator
@@ -42,6 +44,13 @@ def default_particle_start(magnets, g=ATTRACTION_STRENGTH, offset=PARTICLE_ORBIT
     speed = np.sqrt(g * total_strength / radius)
     tangent = np.array([-offset[1], offset[0]]) / radius
     return centroid + offset, tangent * speed
+
+
+def default_lorentz_start(magnets, radius=LORENTZ_ORBIT_RADIUS, speed=LORENTZ_ORBIT_SPEED):
+    """Launch state tuned (see the Lorentz tuning experiment) to stay
+    bounded rather than escape almost immediately."""
+    centroid = magnet_positions(magnets).mean(axis=0) if magnets else np.zeros(2)
+    return centroid + np.array([radius, 0.0]), np.array([0.0, speed])
 
 INSTRUCTIONS = (
     "Left-drag: move magnet    |    a, then click: add magnet    |    "
@@ -340,7 +349,10 @@ class InteractiveScene:
         self.mode = MODE_LORENTZ if self.mode == MODE_ATTRACTION else MODE_ATTRACTION
         self._field_dirty = True
 
-        start_position, start_velocity = default_particle_start(self.magnets)
+        start_position, start_velocity = (
+            default_lorentz_start(self.magnets) if self.mode == MODE_LORENTZ
+            else default_particle_start(self.magnets)
+        )
         self.particle = Particle(position=start_position,
                                   velocity=start_velocity,
                                   charge=PARTICLE_CHARGE)
