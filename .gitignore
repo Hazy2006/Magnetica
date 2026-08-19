@@ -28,7 +28,6 @@ ENV/
 output/
 *.mp4
 *.gif
-*.png
 !docs/*.png
 
 # Env files
