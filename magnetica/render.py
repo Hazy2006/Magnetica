@@ -21,9 +21,7 @@ PARTICLE_STEPS_PER_FRAME = 15
 SPEED_BOOST_FACTOR = 2.5   # substeps-per-frame multiplier while the speed button is held
 TRAIL_LENGTH = 600
 ATTRACTION_STRENGTH = 0.5   # g in Particle.step_attracted
-PARTICLE_ORBIT_OFFSET = np.array([2.5, 0.0])  # start this far from the magnets' centroid
-LORENTZ_ORBIT_RADIUS = 2.5   # tuned to substantially delay escape (see Lorentz tuning experiment)
-LORENTZ_ORBIT_SPEED = 1.0    # tuned to substantially delay escape (see Lorentz tuning experiment)
+LORENTZ_ORBIT_SPEED = 1.0    # kept from the Lorentz tuning experiment; start position is now the centroid
 
 MODE_ATTRACTION = "attraction"   # Particle.step_attracted -- the central pull driving the on-screen orbit
 MODE_LORENTZ = "lorentz"         # Particle.step -- the real magnetic Lorentz-force integrator
@@ -33,27 +31,18 @@ MODE_LABELS = {
 }
 
 
-def default_particle_start(magnets, g=ATTRACTION_STRENGTH, offset=PARTICLE_ORBIT_OFFSET):
-    """Position/velocity for a roughly circular orbit around the magnets'
-    centroid, treating their combined strength as one point mass at the
-    starting radius -- an approximation, but enough to launch a bounded
-    orbit instead of a collision or an escape."""
+def default_particle_start(magnets):
+    """Spawn at rest at the magnets' centroid."""
     centroid = magnet_positions(magnets).mean(axis=0) if magnets else np.zeros(2)
-    total_strength = sum(np.linalg.norm(m.moment) for m in magnets) or 1.0
-    radius = np.linalg.norm(offset)
-    speed = np.sqrt(g * total_strength / radius)
-    tangent = np.array([-offset[1], offset[0]]) / radius
-    return centroid + offset, tangent * speed
+    return centroid, np.zeros(2)
 
 
-def default_lorentz_start(magnets, radius=LORENTZ_ORBIT_RADIUS, speed=LORENTZ_ORBIT_SPEED):
-    """Launch state tuned (see the Lorentz tuning experiment) to
-    substantially delay escape compared to an untuned launch -- it
-    still escapes eventually (~318s of sim time in the swept
-    configuration), since no combination in the swept range proved
-    genuinely bounded."""
+def default_lorentz_start(magnets, speed=LORENTZ_ORBIT_SPEED):
+    """Spawn at the magnets' centroid with a small initial velocity --
+    a stationary charge feels no magnetic force (F = qv x B is zero at
+    v=0), so a truly at-rest start would never move."""
     centroid = magnet_positions(magnets).mean(axis=0) if magnets else np.zeros(2)
-    return centroid + np.array([radius, 0.0]), np.array([0.0, speed])
+    return centroid, np.array([0.0, speed])
 
 INSTRUCTIONS = (
     "Left-drag: move magnet    |    a, then click: add magnet    |    "
